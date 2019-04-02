@@ -4,7 +4,7 @@ from fnal_column_analysis_tools.util import awkward
 from fnal_column_analysis_tools.util import numpy as np
 from copy import deepcopy
 
-from scipy.interpolate import interp1d
+#from scipy.interpolate import interp1d
 
 def masked_bin_eval(dim1_indices, dimN_bins, dimN_vals):
     dimN_indices = np.empty_like(dim1_indices)

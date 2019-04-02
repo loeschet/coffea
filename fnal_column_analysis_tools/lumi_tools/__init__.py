@@ -39,21 +39,25 @@ class LumiMask(object):
         Instantiate with the json file, and call with an array of runs and lumiSections, to
         return a boolean array, where valid lumiSections are marked True
     """
+    numpy_lib = np
+    
     def __init__(self, jsonfile):
         with open(jsonfile) as fin:
             goldenjson = json.load(fin)
         self._masks = {}
         for run, lumilist in goldenjson.items():
             run = int(run)
-            mask = np.array(lumilist).flatten()
+            mask = self.numpy_lib.array(lumilist).flatten()
             mask[::2] -= 1
             self._masks[run] = mask
 
     def __call__(self, runs, lumis):
-        mask = np.zeros(dtype='bool', shape=runs.shape)
-        for run in np.unique(runs):
+        mask = self.numpy_lib.zeros(dtype='bool', shape=runs.shape)
+        for run in self.numpy_lib.unique(runs):
+            run = int(run)
             if run in self._masks:
-                mask |= (np.searchsorted(self._masks[run], lumis)%2==1) & (runs==run)
+                ss = self.numpy_lib.searchsorted(self._masks[run], lumis)
+                mask |= (ss%2==1) & (runs==run)
         return mask
 
 
