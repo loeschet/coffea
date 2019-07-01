@@ -30,3 +30,6 @@ def save(output, filename):
     '''
     with lz4.frame.open(filename, 'wb') as fout:
         cloudpickle.dump(output, fout)
+
+import os
+USE_CUPY = int(os.environ.get("HEPACCELERATE_CUDA")) == 1

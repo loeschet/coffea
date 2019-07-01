@@ -4,20 +4,50 @@ from ..util import awkward
 from ..util import numpy as np
 from copy import deepcopy
 
+import scipy
+import scipy.interpolate
 from scipy.interpolate import interp1d
 
+from .jme_standard_function import searchsorted_wrapped
+
+from ..util import USE_CUPY
+
+if USE_CUPY:
+    import cupy as np
+    import cupy
 
 def masked_bin_eval(dim1_indices, dimN_bins, dimN_vals):
     dimN_indices = np.empty_like(dim1_indices)
     for i in np.unique(dim1_indices):
         idx = np.where(dim1_indices == i)
-        dimN_indices[idx] = np.clip(np.searchsorted(dimN_bins[i],
+        dimN_indices[idx] = np.clip(searchsorted_wrapped(dimN_bins[i],
                                                     dimN_vals[idx],
                                                     side='right') - 1,
                                     0, len(dimN_bins[i]) - 2)
     return dimN_indices
 
-
+if USE_CUPY:
+    class interp1d:
+        def __init__(self, x, y):
+            self.x = cupy.array(x)
+            self.y = cupy.array(y)
+            self.ydiffs = cupy.diff(self.y)
+            self.xdiffs = cupy.diff(self.x)
+            self.delta = self.ydiffs / self.xdiffs
+    
+            #self.scipy_interp1d = scipy.interpolate.interp1d(x, y)
+    
+        def __call__(self, xvals):
+            idx = searchsorted_wrapped(self.x, xvals, asnumpy=False)
+           
+            xshifts =  self.x[idx] - xvals 
+            yvals = self.y[idx] 
+            yvals_new = yvals - self.delta[idx-1]*xshifts
+            
+            #yvals_scipy = self.scipy_interp1d(xvals)
+            #assert(np.sum(np.power(yvals_new - yvals_scipy,2)) < 1e-1)
+            return yvals_new
+ 
 class jec_uncertainty_lookup(lookup_base):
     """
     This class defines a lookup table for jet energy scale uncertainties.
@@ -78,22 +108,32 @@ class jec_uncertainty_lookup(lookup_base):
         """ uncertainties = f(args) """
         bin_vals = {argname: args[self._dim_args[argname]] for argname in self._dim_order}
         eval_vals = {argname: args[self._eval_args[argname]] for argname in self._eval_vars}
+        
+        #if USE_CUPY:
+        #    bin_vals = {k: cupy.array(v) for k, v in bin_vals.items()}
+        #    eval_vals = {k: cupy.array(v) for k, v in eval_vals.items()}
 
         # lookup the bins that we care about
         dim1_name = self._dim_order[0]
-        dim1_indices = np.clip(np.searchsorted(self._bins[dim1_name],
+        dim1_indices = np.clip(searchsorted_wrapped(self._bins[dim1_name],
                                                bin_vals[dim1_name],
-                                               side='right') - 1,
+                                               side='right', asnumpy=not USE_CUPY) - 1,
                                0, self._bins[dim1_name].size - 2)
+        #if USE_CUPY:
+        #    dim1_indices = cupy.array(dim1_indices)
 
         # get clamp values and clip the inputs
         outs = np.ones(shape=(args[0].size, 2), dtype=np.float)
         for i in np.unique(dim1_indices):
+            i = int(i)
             mask = np.where(dim1_indices == i)
             vals = np.clip(eval_vals[self._eval_vars[0]][mask],
                            self._eval_knots[0], self._eval_knots[-1])
             outs[:, 0][mask] += self._eval_ups[i](vals)
             outs[:, 1][mask] -= self._eval_downs[i](vals)
+
+        if USE_CUPY:
+            outs = cupy.asnumpy(outs)
 
         return outs
 

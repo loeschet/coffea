@@ -5,6 +5,9 @@ from ..util import awkward
 from ..util import numpy as np
 from copy import deepcopy
 
+from ..util import USE_CUPY
+if USE_CUPY:
+    import cupy
 
 def _checkConsistency(against, tocheck):
     if against is None:

@@ -1,6 +1,10 @@
 from ..util import awkward
 from ..util import numpy as np
+from ..util import USE_CUPY
+import time
 
+if USE_CUPY:
+    import cupy as np
 
 class lookup_base(object):
     # base class for all objects that do some sort of value or function lookup
@@ -8,6 +12,7 @@ class lookup_base(object):
         pass
 
     def __call__(self, *args):
+        t0 = time.time()
         inputs = list(args)
         offsets = None
         # TODO: check can use offsets (this should always be true for striped)
@@ -29,6 +34,8 @@ class lookup_base(object):
         retval = self._evaluate(*tuple(inputs))
         if offsets is not None and type(offsets) is not int:
             retval = awkward.JaggedArray.fromoffsets(offsets, retval)
+        t1 = time.time()
+        print("prof", self.__class__, self.signature, self._formula_str, t1 - t0)
         return retval
 
     def _evaluate(self, *args):
