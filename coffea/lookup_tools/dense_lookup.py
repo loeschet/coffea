@@ -1,9 +1,14 @@
 from .lookup_base import lookup_base
-
-from ..util import awkward
 from ..util import numpy as np
+from ..util import awkward
 from copy import deepcopy
 
+from ..util import USE_CUPY
+if USE_CUPY:
+    import cupy as np
+    import cupy
+
+from .jme_standard_function import searchsorted_wrapped
 
 class dense_lookup(lookup_base):
     def __init__(self, values, dims, feval_dim=None):
@@ -22,6 +27,9 @@ class dense_lookup(lookup_base):
                             'str' in values.dtype.name or
                             'unicode' in values.dtype.name or
                             'bytes' in values.dtype.name)  # ....
+       
+        if USE_CUPY:
+            values = cupy.asarray(values) 
         if not isinstance(values, np.ndarray):
             raise TypeError("values is not a numpy array, but %r" % type(values))
         if vals_are_strings:
@@ -34,10 +42,10 @@ class dense_lookup(lookup_base):
             if type(arg) == awkward.JaggedArray:
                 raise Exception('JaggedArray in inputs')
         if self._dimension == 1:
-            indices.append(np.clip(np.searchsorted(self._axes, args[0], side='right') - 1, 0, self._values.shape[0] - 1))
+            indices.append(np.clip(searchsorted_wrapped(self._axes, args[0], side='right', asnumpy=not USE_CUPY) - 1, 0, self._values.shape[0] - 1))
         else:
             for dim in range(self._dimension):
-                indices.append(np.clip(np.searchsorted(self._axes[dim], args[dim], side='right') - 1, 0, self._values.shape[dim] - 1))
+                indices.append(np.clip(searchsorted_wrapped(self._axes[dim], args[dim], side='right', asnumpy=not USE_CUPY) - 1, 0, self._values.shape[dim] - 1))
         return self._values[tuple(indices)]
 
     def __repr__(self):

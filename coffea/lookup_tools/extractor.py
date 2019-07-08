@@ -1,7 +1,11 @@
 from __future__ import print_function
 import os
 
-from ..util import numpy as np
+from ..util import USE_CUPY
+if USE_CUPY:
+    import cupy as np
+else:
+    from ..util import numpy as np
 from .evaluator import evaluator
 
 from .root_converters import convert_histo_root_file
