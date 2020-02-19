@@ -7,18 +7,32 @@ except ImportError:
 
 
 class LazyDataFrame(MutableMapping):
-    """
-    Simple delayed uproot reader (a la lazyarrays)
+    """Simple delayed uproot reader (a la lazyarrays)
+
     Keeps track of values accessed, for later parsing.
+
+    Parameters
+    ----------
+        tree : uproot.TTree
+            Tree to read
+        entrystart : int, optional
+            First entry to read, default: 0
+        entrystop : int, optional
+            Last entry to read, default None (read to end)
+        preload_items : iterable
+            Force preloading of a set of columns from the tree
+        flatten : bool
+            Remove jagged structure from columns read
     """
-    def __init__(self, tree, stride=None, index=None, preload_items=None, flatten=False):
+    def __init__(self, tree, entrystart=None, entrystop=None, preload_items=None, flatten=False):
+        import uproot
         self._tree = tree
+        self._flatten = flatten
         self._branchargs = {'awkwardlib': awkward, 'flatten': flatten}
-        self._stride = None
-        if (stride is not None) and (index is not None):
-            self._stride = stride
-            self._branchargs['entrystart'] = index * stride
-            self._branchargs['entrystop'] = min(self._tree.numentries, (index + 1) * stride)
+        entrystart, entrystop = uproot.tree._normalize_entrystartstop(tree.numentries, entrystart, entrystop)
+        self._branchargs['entrystart'] = entrystart
+        self._branchargs['entrystop'] = entrystop
+        self._available = {k.decode('ascii') for k in self._tree.keys()}
         self._dict = {}
         self._materialized = set()
         if preload_items:
@@ -37,8 +51,14 @@ class LazyDataFrame(MutableMapping):
         else:
             raise KeyError(key)
 
+    def __getattr__(self, key):
+        try:
+            return self.__getitem__(key)
+        except KeyError:
+            raise AttributeError(key)
+
     def __iter__(self):
-        for item in self._dict:
+        for item in self._available:
             yield item
 
     def __len__(self):
@@ -47,31 +67,54 @@ class LazyDataFrame(MutableMapping):
     def __setitem__(self, key, value):
         self._dict[key] = value
 
+    def __contains__(self, key):
+        # by default, MutableMapping uses __getitem__ to test, but we want to avoid materialization
+        return key in self._dict or key in self._tree
+
     @property
     def available(self):
-        return self._tree.keys()
+        """Set of available columns"""
+        return self._available
+
+    @property
+    def columns(self):
+        """Set of available columns"""
+        return self._available
 
     @property
     def materialized(self):
+        """Set of columns read from tree"""
         return self._materialized
 
     @property
     def size(self):
-        if self._stride is None:
-            return self._tree.numentries
+        """Length of column vector"""
         return (self._branchargs['entrystop'] - self._branchargs['entrystart'])
 
     def preload(self, columns):
+        """Force loading of several columns
+
+        Parameters
+        ----------
+            columns : iterable
+                A list of columns to load
+        """
         for name in columns:
             if name in self._tree:
                 _ = self[name]
 
 
 class PreloadedDataFrame(MutableMapping):
-    """
-    For instances like spark where the columns are preloaded
-    Require input number of rows (don't want to implicitly rely on picking a random item)
-    Still keep track of what was accessed in case it is of use
+    """A dataframe for instances like spark where the columns are preloaded
+
+    Provides a unified interface, matching that of LazyDataFrame.
+
+    Parameters
+    ----------
+        size : int
+            Number of rows
+        items : dict
+            Mapping of column name to column array
     """
     def __init__(self, size, items):
         self._size = size
@@ -85,9 +128,14 @@ class PreloadedDataFrame(MutableMapping):
         self._accessed.add(key)
         return self._dict[key]
 
+    def __getattr__(self, key):
+        try:
+            return self.__getitem__(key)
+        except KeyError:
+            raise AttributeError(key)
+
     def __iter__(self):
         for key in self._dict:
-            self._accessed.add(key)
             yield key
 
     def __len__(self):
@@ -98,12 +146,15 @@ class PreloadedDataFrame(MutableMapping):
 
     @property
     def available(self):
+        """List of available columns"""
         return self._dict.keys()
 
     @property
     def materialized(self):
+        """List of accessed columns"""
         return self._accessed
 
     @property
     def size(self):
+        """Length of column vector"""
         return self._size

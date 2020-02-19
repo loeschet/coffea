@@ -15,19 +15,25 @@ _coverage1sd = scipy.stats.norm.cdf(1) - scipy.stats.norm.cdf(-1)
 
 
 def poisson_interval(sumw, sumw2, coverage=_coverage1sd):
-    """
-        sumw: sum of weights
-        sumw2: sum weights**2
-        coverage: coverage, default to 68%
+    """Frequentist coverage interval for Poisson-distributed observations
 
-        The so-called 'Garwood' interval
-            c.f. https://www.ine.pt/revstat/pdf/rs120203.pdf
-            or http://ms.mcmaster.ca/peter/s743/poissonalpha.html
-        For weighted data, approximate the observed count by sumw**2/sumw2
-            This choice effectively scales the unweighted poisson interval by the average weight
-            Maybe not the best... see https://arxiv.org/pdf/1309.1287.pdf for a proper treatment
-        When a bin is zero, find the scale of the nearest nonzero bin
-        If all bins zero, raise warning and set interval to sumw
+    Parameters
+    ----------
+        sumw : numpy.ndarray
+            Sum of weights vector
+        sumw2 : numpy.ndarray
+            Sum weights squared vector
+        coverage : float, optional
+            Central coverage interval, defaults to 68%
+
+    Calculates the so-called 'Garwood' interval,
+    c.f. https://www.ine.pt/revstat/pdf/rs120203.pdf or
+    http://ms.mcmaster.ca/peter/s743/poissonalpha.html
+    For weighted data, this approximates the observed count by ``sumw**2/sumw2``, which
+    effectively scales the unweighted poisson interval by the average weight.
+    This may not be the optimal solution: see https://arxiv.org/pdf/1309.1287.pdf for a proper treatment.
+    When a bin is zero, the scale of the nearest nonzero bin is substituted to scale the nominal upper bound.
+    If all bins zero, a warning is generated and interval is set to ``sumw``.
     """
     scale = np.empty_like(sumw)
     scale[sumw != 0] = sumw2[sumw != 0] / sumw[sumw != 0]
@@ -49,13 +55,18 @@ def poisson_interval(sumw, sumw2, coverage=_coverage1sd):
 
 
 def clopper_pearson_interval(num, denom, coverage=_coverage1sd):
-    """
-        Compute Clopper-Pearson coverage interval for binomial distribution
-        num: successes
-        denom: trials
-        coverage: coverage, default to 68%
+    """Compute Clopper-Pearson coverage interval for a binomial distribution
 
-        c.f. http://en.wikipedia.org/wiki/Binomial_proportion_confidence_interval
+    Parameters
+    ----------
+        num : numpy.ndarray
+            Numerator, or number of successes, vectorized
+        denom : numpy.ndarray
+            Denominator or number of trials, vectorized
+        coverage : float, optional
+            Central coverage interval, defaults to 68%
+
+    c.f. http://en.wikipedia.org/wiki/Binomial_proportion_confidence_interval
     """
     if np.any(num > denom):
         raise ValueError("Found numerator larger than denominator while calculating binomial uncertainty")
@@ -63,62 +74,111 @@ def clopper_pearson_interval(num, denom, coverage=_coverage1sd):
     hi = scipy.stats.beta.ppf((1 + coverage) / 2, num + 1, denom - num)
     interval = np.array([lo, hi])
     interval[:, num == 0.] = 0.
-    interval[:, num == denom] = 1.
+    interval[1, num == denom] = 1.
     return interval
 
 
-def plot1d(hist, ax=None, clear=True, overlay=None, stack=False, overflow='none', line_opts=None,
-           fill_opts=None, error_opts=None, overlay_overflow='none', density=False, binwnorm=None):
+def normal_interval(pw, tw, pw2, tw2, coverage=_coverage1sd):
+    """Compute errors based on the expansion of pass/(pass + fail), possibly weighted
+
+        Parameters
+        ----------
+        pw : numpy.ndarray
+            Numerator, or number of (weighted) successes, vectorized
+        tw : numpy.ndarray
+            Denominator or number of (weighted) trials, vectorized
+        pw2 : numpy.ndarray
+            Numerator sum of weights squared, vectorized
+        tw2 : numpy.ndarray
+            Denominator sum of weights squared, vectorized
+        coverage : float, optional
+            Central coverage interval, defaults to 68%
+
+        c.f. https://root.cern.ch/doc/master/TEfficiency_8cxx_source.html#l02515
     """
+
+    eff = pw / tw
+
+    variance = (pw2 * (1 - 2 * eff) + tw2 * eff**2) / (tw**2)
+    sigma = np.sqrt(variance)
+
+    prob = 0.5 * (1 - coverage)
+    delta = np.zeros_like(sigma)
+    delta[sigma != 0] = scipy.stats.norm.ppf(prob, scale=sigma[sigma != 0])
+
+    lo = eff - np.minimum(eff + delta, np.ones_like(eff))
+    hi = np.maximum(eff - delta, np.zeros_like(eff)) - eff
+
+    return np.array([lo, hi])
+
+
+def plot1d(hist, ax=None, clear=True, overlay=None, stack=False, overflow='none', line_opts=None,
+           fill_opts=None, error_opts=None, legend_opts={}, overlay_overflow='none', density=False, binwnorm=None):
+    """Create a 1D plot from a 1D or 2D `Hist` object
+
     Parameters
     ----------
-        hist:
-            Hist object with maximum of two dimensions
-        ax:
-            matplotlib Axes object (if None, one is created)
-        clear:
-            clear Axes before drawing (if passed); if False, this function will skip drawing the legend
-        overlay:
-            the axis of hist to overlay (remaining one will be x axis)
-        stack:
-            whether to stack or overlay the other dimension (if one exists)
-        overflow:
-            overflow behavior of plot axis (see Hist.sum() docs)
-        overlay_overflow:
-            overflow behavior of dense overlay axis, if one exists
-        density:
-            Convert sum weights to probability density (i.e. integrates to 1 over domain of axis) (NB: conflicts with binwnorm)
-        binwnorm:
-            Convert sum weights to bin-width-normalized, with units equal to supplied value (usually you want to specify 1.)
+        hist : Hist
+            Histogram with maximum of two dimensions
+        ax : matplotlib.axes.Axes, optional
+            Axes object (if None, one is created)
+        clear : bool, optional
+            Whether to clear Axes before drawing (if passed); if False, this function will skip drawing the legend
+        overlay : str, optional
+            In the case that ``hist`` is 2D, specify the axis of hist to overlay (remaining axis will be x axis)
+        stack : bool, optional
+            Whether to stack or overlay non-axis dimension (if it exists)
+        overflow : str, optional
+            If overflow behavior is not 'none', extra bins will be drawn on either end of the nominal
+            axis range, to represent the contents of the overflow bins.  See `Hist.sum` documentation
+            for a description of the options.
+        line_opts : dict, optional
+            A dictionary of options to pass to the matplotlib
+            `ax.step <https://matplotlib.org/3.1.1/api/_as_gen/matplotlib.pyplot.step.html>`_ call
+            internal to this function.  Leave blank for defaults.
+        fill_opts : dict, optional
+            A dictionary of options to pass to the matplotlib
+            `ax.fill_between <https://matplotlib.org/3.1.1/api/_as_gen/matplotlib.axes.Axes.fill_between.html>`_ call
+            internal to this function.  Leave blank for defaults.
+        error_opts : dict, optional
+            A dictionary of options to pass to the matplotlib
+            `ax.errorbar <https://matplotlib.org/3.1.1/api/_as_gen/matplotlib.pyplot.errorbar.html>`_ call
+            internal to this function.  Leave blank for defaults.  Some special options are interpreted by
+            this function and not passed to matplotlib: 'emarker' (default: '') specifies the marker type
+            to place at cap of the errorbar.
+        legend_opts : dict, optional
+            A dictionary of options  to pass to the matplotlib
+            `ax.legend <https://matplotlib.org/3.1.1/api/_as_gen/matplotlib.pyplot.legend.html>`_ call
+            internal to this fuction.  Leave blank for defaults.
+        overlay_overflow : str, optional
+            If overflow behavior is not 'none', extra bins in the overlay axis will be overlayed or stacked,
+            to represent the contents of the overflow bins.  See `Hist.sum` documentation for a description of the options.
+        density : bool, optional
+            If true, convert sum weights to probability density (i.e. integrates to 1 over domain of axis)
+            (Note: this option conflicts with ``binwnorm``)
+        binwnorm : float, optional
+            If true, convert sum weights to bin-width-normalized, with unit equal to supplied value (usually you want to specify 1.)
 
-    The draw options are passed as dicts to the relevant matplotlib function, with some exceptions in case
-    it is especially common or useful.  If none of ``*_opts`` is specified, nothing will be plotted!
 
-    Pass an empty dict (e.g. line_opts={}) for defaults
-        line_opts: options to plot a step
-            Special options interpreted by this function and not passed to matplotlib:
-                (none)
-
-        fill_opts: to plot a filled area
-            Special options interpreted by this function and not passed to matplotlib:
-                (none)
-
-        error_opts: to plot an errorbar
-            Special options interpreted by this function and not passed to matplotlib:
-                'emarker' (default: '') marker to place at cap of errorbar
+    Returns
+    -------
+        ax : matplotlib.axes.Axes
+            A matplotlib `Axes <https://matplotlib.org/3.1.1/api/axes_api.html>`_ object
     """
+    import mplhep as hep
     import matplotlib.pyplot as plt
     if ax is None:
-        fig, ax = plt.subplots(1, 1)
+        ax = plt.gca()
     else:
         if not isinstance(ax, plt.Axes):
             raise ValueError("ax must be a matplotlib Axes object")
         if clear:
             ax.clear()
-        fig = ax.figure
     if hist.dim() > 2:
         raise ValueError("plot1d() can only support up to two dimensions (one for axis, one to stack or overlay)")
-    if overlay is None and hist.dim() > 1:
+    if overlay is None and hist.sparse_dim() == 1 and hist.dense_dim() == 1:
+        overlay = hist.sparse_axes()[0].name
+    elif overlay is None and hist.dim() > 1:
         raise ValueError("plot1d() can only support one dimension without an overlay axis chosen")
     if density and binwnorm is not None:
         raise ValueError("Cannot use density and binwnorm at the same time!")
@@ -143,15 +203,18 @@ def plot1d(hist, ax=None, clear=True, overlay=None, stack=False, overflow='none'
         ax.set_xlabel(axis.label)
         ax.set_ylabel(hist.label)
         edges = axis.edges(overflow=overflow)
-        centers = axis.centers(overflow=overflow)
-        stack_sumw, stack_sumw2 = None, None
-        primitives = {}
         identifiers = hist.identifiers(overlay, overflow=overlay_overflow) if overlay is not None else [None]
+        plot_info = {
+            'identifier': identifiers,
+            'label': list(map(str, identifiers)),
+            'sumw': [],
+            'sumw2': []
+        }
         for i, identifier in enumerate(identifiers):
             if identifier is None:
                 sumw, sumw2 = hist.values(sumw2=True, overflow=overflow)[()]
             elif isinstance(overlay, SparseAxis):
-                sumw, sumw2 = hist.project(overlay, identifier).values(sumw2=True, overflow=overflow)[()]
+                sumw, sumw2 = hist.integrate(overlay, identifier).values(sumw2=True, overflow=overflow)[()]
             else:
                 sumw, sumw2 = hist.values(sumw2=True, overflow='allnan')[()]
                 the_slice = (i if overflow_behavior(overlay_overflow).start is None else i + 1, overflow_behavior(overflow))
@@ -164,123 +227,101 @@ def plot1d(hist, ax=None, clear=True, overlay=None, stack=False, overflow='none'
                 binnorms = overallnorm / (np.diff(edges) * np.sum(sumw))
                 sumw = sumw * binnorms
                 sumw2 = sumw2 * binnorms**2
-            label = str(identifier)
-            primitives[identifier] = []
-            first_color = None
-            if stack:
-                if stack_sumw is None:
-                    stack_sumw, stack_sumw2 = sumw.copy(), sumw2.copy()
-                else:
-                    stack_sumw += sumw
-                    stack_sumw2 += sumw2
+            plot_info['sumw'].append(sumw)
+            plot_info['sumw2'].append(sumw2)
 
-                if line_opts is not None:
-                    opts = {'where': 'post', 'label': label}
-                    opts.update(line_opts)
-                    l, = ax.step(x=edges, y=np.r_[stack_sumw, stack_sumw[-1]], **opts)
-                    first_color = l.get_color()
-                    primitives[identifier].append(l)
-                if fill_opts is not None:
-                    opts = {'step': 'post', 'label': label}
-                    if first_color is not None:
-                        opts['color'] = first_color
-                    opts.update(fill_opts)
-                    f = ax.fill_between(x=edges, y1=np.r_[stack_sumw - sumw, stack_sumw[-1] - sumw[-1]], y2=np.r_[stack_sumw, stack_sumw[-1]], **opts)
-                    if first_color is None:
-                        first_color = f.get_facecolor()[0]
-                    primitives[identifier].append(f)
-                # error_opts for stack is interpreted later
-            else:
-                if line_opts is not None:
-                    opts = {'where': 'post', 'label': label}
-                    opts.update(line_opts)
-                    l, = ax.step(x=edges, y=np.r_[sumw, sumw[-1]], **opts)
-                    first_color = l.get_color()
-                    primitives[identifier].append(l)
-                if fill_opts is not None:
-                    opts = {'step': 'post', 'label': label}
-                    if first_color is not None:
-                        opts['color'] = first_color
-                    opts.update(fill_opts)
-                    f = ax.fill_between(x=edges, y1=np.r_[sumw, sumw[-1]], **opts)
-                    if first_color is None:
-                        first_color = f.get_facecolor()[0]
-                    primitives[identifier].append(f)
-                if error_opts is not None:
-                    opts = {'linestyle': 'none', 'label': label}
-                    if first_color is not None:
-                        opts['color'] = first_color
-                    opts.update(error_opts)
-                    emarker = opts.pop('emarker', '')
-                    err = np.abs(poisson_interval(sumw, sumw2) - sumw)
-                    errbar = ax.errorbar(x=centers, y=sumw, yerr=err, **opts)
-                    plt.setp(errbar[1], 'marker', emarker)
-                    primitives[identifier].append(errbar)
-        if stack_sumw is not None and error_opts is not None:
+        def w2err(sumw, sumw2):
+            err = []
+            for a, b in zip(sumw, sumw2):
+                err.append(np.abs(poisson_interval(a, b) - a))
+            return err
+
+        kwargs = None
+        if line_opts is not None and error_opts is None:
+            _error = None
+        else:
+            _error = w2err(plot_info['sumw'], plot_info['sumw2'])
+        if fill_opts is not None:
+            histtype = 'fill'
+            kwargs = fill_opts
+        elif error_opts is not None and line_opts is None:
+            histtype = 'errorbar'
+            kwargs = error_opts
+        else:
+            histtype = 'step'
+            kwargs = line_opts
+        if kwargs is None:
+            kwargs = {}
+
+        hep.histplot(plot_info['sumw'], edges, label=plot_info['label'],
+                     yerr=_error, stack=stack, histtype=histtype, ax=ax,
+                     **kwargs)
+
+        if stack and error_opts is not None:
+            stack_sumw = np.sum(plot_info['sumw'], axis=0)
+            stack_sumw2 = np.sum(plot_info['sumw2'], axis=0)
             err = poisson_interval(stack_sumw, stack_sumw2)
-            opts = {'step': 'post', 'label': 'Sum unc.'}
+            opts = {'step': 'post', 'label': 'Sum unc.', 'hatch': '///',
+                    'facecolor': 'none', 'edgecolor': (0, 0, 0, .5), 'linewidth': 0}
             opts.update(error_opts)
-            errbar = ax.fill_between(x=edges, y1=np.r_[err[0, :], err[0, -1]], y2=np.r_[err[1, :], err[1, -1]], **opts)
-            primitives[StringBin('stack_unc', opts['label'])] = [errbar]
+            ax.fill_between(x=edges, y1=np.r_[err[0, :], err[0, -1]],
+                            y2=np.r_[err[1, :], err[1, -1]], **opts)
 
-    if clear:
-        if overlay is not None:
-            handles, labels = list(), list()
-            for identifier, handlelist in primitives.items():
-                handles.append(tuple(h for h in handlelist if h.get_label()[0] != '_'))
-                labels.append(str(identifier))
-            primitives['legend'] = ax.legend(title=overlay.label, handles=handles, labels=labels)
+        if legend_opts is not None:
+            _label = overlay.label if overlay is not None else ""
+            ax.legend(title=_label, **legend_opts)
+        else:
+            ax.legend(title=_label)
         ax.autoscale(axis='x', tight=True)
         ax.set_ylim(0, None)
 
-    return fig, ax, primitives
+    return ax
 
 
 def plotratio(num, denom, ax=None, clear=True, overflow='none', error_opts=None, denom_fill_opts=None, guide_opts=None, unc='clopper-pearson', label=None):
-    """
-    Create a ratio plot, dividing two compatible histograms
+    """Create a ratio plot, dividing two compatible histograms
 
     Parameters
     ----------
-        num:
-            Hist object with single axis
-        denom:
-            Hist object with identical axis to num
-        ax:
-            matplotlib Axes object (if None, one is created)
-        clear:
-            clear Axes before drawing (if passed); if False, this function will skip drawing the legend
-        overflow:
-            overflow behavior of plot axis (see Hist.sum() docs)
-        error_opts:
-            to plot an errorbar
-            Special options interpreted by this function and not passed to matplotlib:
-            'emarker' (default: '') marker to place at cap of errorbar
-        denom_fill_opts:
-            to plot a filled area centered at 1, representing denominator uncertainty
-            Special options interpreted by this function and not passed to matplotlib:
-            (none)
-        guide_opts:
-            to plot a horizontal guide line at ratio of 1.
-            Special options interpreted by this function and not passed to matplotlib:
-            (none)
-        unc:
-            Uncertainty calculation option:
-                'clopper-pearson':
-                    interval for efficiencies
-                'poisson-ratio':
-                    interval for ratio of poisson distributions
-                'num':
-                    poisson interval of numerator scaled by denominator value
+        num : Hist
+            Numerator, a single-axis histogram
+        denom : Hist
+            Denominator, a single-axis histogram
+        ax : matplotlib.axes.Axes, optional
+            Axes object (if None, one is created)
+        clear : bool, optional
+            Whether to clear Axes before drawing (if passed); if False, this function will skip drawing the legend
+        overflow : str, optional
+            If overflow behavior is not 'none', extra bins will be drawn on either end of the nominal
+            axis range, to represent the contents of the overflow bins.  See `Hist.sum` documentation
+            for a description of the options.
+        error_opts : dict, optional
+            A dictionary of options to pass to the matplotlib
+            `ax.errorbar <https://matplotlib.org/3.1.1/api/_as_gen/matplotlib.pyplot.errorbar.html>`_ call
+            internal to this function.  Leave blank for defaults.  Some special options are interpreted by
+            this function and not passed to matplotlib: 'emarker' (default: '') specifies the marker type
+            to place at cap of the errorbar.
+        denom_fill_opts : dict, optional
+            A dictionary of options to pass to the matplotlib
+            `ax.fill_between <https://matplotlib.org/3.1.1/api/_as_gen/matplotlib.axes.Axes.fill_between.html>`_ call
+            internal to this function, filling the denominator uncertainty band.  Leave blank for defaults.
+        guide_opts : dict, optional
+            A dictionary of options to pass to the matplotlib
+            `ax.axhline <https://matplotlib.org/3.1.1/api/_as_gen/matplotlib.axes.Axes.axhline.html>`_ call
+            internal to this function, to plot a horizontal guide line at ratio of 1.  Leave blank for defaults.
+        unc : str, optional
+            Uncertainty calculation option: 'clopper-pearson' interval for efficiencies; 'poisson-ratio' interval
+            for ratio of poisson distributions; 'num' poisson interval of numerator scaled by denominator value
+            (common for data/mc, for better or worse).
+        label : str, optional
+            Associate a label to this entry (note: y axis label set by ``num.label``)
 
-            (common for data/mc, for better or worse...)
-        label:
-            associate a label with this entry (note: y axis label set by num.label)
-
-    The draw options are passed as dicts to the relevant matplotlib function, with some exceptions in case
-    it is especially common or useful.  If none of ``*_opts`` is specified, nothing will be plotted!
-    Pass an empty dict (e.g. error_opts={}) for defaults.
+    Returns
+    -------
+        ax : matplotlib.axes.Axes
+            A matplotlib `Axes <https://matplotlib.org/3.1.1/api/axes_api.html>`_ object
     """
+    import mplhep as hep
     import matplotlib.pyplot as plt
     if ax is None:
         fig, ax = plt.subplots(1, 1)
@@ -289,7 +330,6 @@ def plotratio(num, denom, ax=None, clear=True, overflow='none', error_opts=None,
             raise ValueError("ax must be a matplotlib Axes object")
         if clear:
             ax.clear()
-        fig = ax.figure
     if not num.compatible(denom):
         raise ValueError("numerator and denominator histograms have incompatible axis definitions")
     if num.dim() > 1:
@@ -318,71 +358,75 @@ def plotratio(num, denom, ax=None, clear=True, overflow='none', error_opts=None,
             rsumw_err = np.abs(clopper_pearson_interval(sumw_num, sumw_num + sumw_denom) - rsumw)
         elif unc == 'num':
             rsumw_err = np.abs(poisson_interval(rsumw, sumw2_num / sumw_denom**2) - rsumw)
+        elif unc == "normal":
+            rsumw_err = np.abs(normal_interval(sumw_num, sumw_denom, sumw2_num, sumw2_denom))
         else:
             raise ValueError("Unrecognized uncertainty option: %r" % unc)
 
-        primitives = {}
         if error_opts is not None:
             opts = {'label': label, 'linestyle': 'none'}
             opts.update(error_opts)
             emarker = opts.pop('emarker', '')
             errbar = ax.errorbar(x=centers, y=rsumw, yerr=rsumw_err, **opts)
             plt.setp(errbar[1], 'marker', emarker)
-            primitives['error'] = errbar
         if denom_fill_opts is not None:
             unity = np.ones_like(sumw_denom)
             denom_unc = poisson_interval(unity, sumw2_denom / sumw_denom**2)
             opts = {'step': 'post', 'facecolor': (0, 0, 0, 0.3), 'linewidth': 0}
             opts.update(denom_fill_opts)
-            fill = ax.fill_between(edges, np.r_[denom_unc[0], denom_unc[0, -1]], np.r_[denom_unc[1], denom_unc[1, -1]], **opts)
-            primitives['denom_fill'] = fill
+            ax.fill_between(edges, np.r_[denom_unc[0], denom_unc[0, -1]], np.r_[denom_unc[1], denom_unc[1, -1]], **opts)
         if guide_opts is not None:
             opts = {'linestyle': '--', 'color': (0, 0, 0, 0.5), 'linewidth': 1}
             opts.update(guide_opts)
-            primitives['guide'] = ax.axhline(1., **opts)
+            ax.axhline(1., **opts)
 
     if clear:
         ax.autoscale(axis='x', tight=True)
         ax.set_ylim(0, None)
 
-    return fig, ax, primitives
+    return ax
 
 
 def plot2d(hist, xaxis, ax=None, clear=True, xoverflow='none', yoverflow='none', patch_opts=None, text_opts=None, density=False, binwnorm=None):
-    """
+    """Create a 2D plot from a 2D `Hist` object
+
     Parameters
     ----------
-        hist:
-            Hist object with two dimensions
-        xaxis:
-            which of the two dimensions to use as x axis
-        ax:
-            matplotlib Axes object (if None, one is created)
-        clear:
-            clear Axes before drawing (if passed); if False, this function will skip drawing the colorbar
-        xoverflow:
-            overflow behavior of x axis (see Hist.sum() docs)
-        yoverflow:
-            overflow behavior of y axis (see Hist.sum() docs)
-        patch_opts:
-            options to plot a rectangular grid of patches colored according to the bin values
-            See https://matplotlib.org/api/_as_gen/matplotlib.pyplot.pcolormesh.html for details
-            Special options interpreted by this function and not passed to matplotlib:
-            (none)
-        text_opts: options to draw text values at bin centers
-            See https://matplotlib.org/api/text_api.html#matplotlib.text.Text for details
-            Special options interpreted by this function and not passed to matplotlib:
-            'format': printf-style float format, default '%.2g'
-        density:
-            Convert sum weights to probability density (i.e. integrates to 1 over domain of axes) (NB: conflicts with binwnorm)
-        binwnorm:
-            Convert sum weights to bin-area-normalized, with units equal to supplied value (usually you want to specify 1.)
+        hist : Hist
+            Histogram with two dimensions
+        xaxis : str or Axis
+            Which of the two dimensions to use as an x axis
+        ax : matplotlib.axes.Axes, optional
+            Axes object (if None, one is created)
+        clear : bool, optional
+            Whether to clear Axes before drawing (if passed); if False, this function will skip drawing the legend
+        xoverflow : str, optional
+            If overflow behavior is not 'none', extra bins will be drawn on either end of the nominal x
+            axis range, to represent the contents of the overflow bins.  See `Hist.sum` documentation
+            for a description of the options.
+        yoverflow : str, optional
+            Similar to ``xoverflow``
+        patch_opts : dict, optional
+            Options passed to the matplotlib `pcolormesh <https://matplotlib.org/api/_as_gen/matplotlib.pyplot.pcolormesh.html>`_
+            call internal to this function, to plot a rectangular grid of patches colored according to the bin values.
+            Leave empty for defaults.
+        text_opts : dict, optional
+            Options passed to the matplotlib `text <https://matplotlib.org/api/text_api.html#matplotlib.text.Text>`_
+            call internal to this function, to place a text label at each bin center with the bin value.  Special
+            options interpreted by this function and not passed to matplotlib: 'format': printf-style float format
+            , default '%.2g'.
+        density : bool, optional
+            If true, convert sum weights to probability density (i.e. integrates to 1 over domain of axis)
+            (Note: this option conflicts with ``binwnorm``)
+        binwnorm : float, optional
+            If true, convert sum weights to bin-width-normalized, with unit equal to supplied value (usually you want to specify 1.)
 
-    The draw options are passed as dicts to the relevant matplotlib function, with some exceptions in case
-    it is especially common or useful.  If none of ``*_opts`` is specified, nothing will be plotted!
-    Pass an empty dict (e.g. patch_opts={}) for defaults
-
+    Returns
+    -------
+        ax : matplotlib.axes.Axes
+            A matplotlib `Axes <https://matplotlib.org/3.1.1/api/axes_api.html>`_ object
     """
+    import mplhep as hep
     import matplotlib.pyplot as plt
     if ax is None:
         fig, ax = plt.subplots(1, 1)
@@ -427,17 +471,14 @@ def plot2d(hist, xaxis, ax=None, clear=True, xoverflow='none', yoverflow='none',
             sumw = sumw * binnorms
             sumw2 = sumw2 * binnorms**2
 
-        primitives = {}
         if patch_opts is not None:
             opts = {'cmap': 'viridis'}
             opts.update(patch_opts)
             pc = ax.pcolormesh(xedges, yedges, sumw.T, **opts)
             ax.add_collection(pc)
-            primitives['patches'] = pc
             if clear:
                 fig.colorbar(pc, ax=ax, label=hist.label)
         if text_opts is not None:
-            primitives['texts'] = []
             for ix, xcenter in enumerate(xaxis.centers()):
                 for iy, ycenter in enumerate(yaxis.centers()):
                     opts = {
@@ -448,8 +489,7 @@ def plot2d(hist, xaxis, ax=None, clear=True, xoverflow='none', yoverflow='none',
                         opts['color'] = 'black' if pc.norm(sumw[ix, iy]) > 0.5 else 'lightgrey'
                     opts.update(text_opts)
                     txtformat = opts.pop('format', r'%.2g')
-                    text = ax.text(xcenter, ycenter, txtformat % sumw[ix, iy], **opts)
-                    primitives['texts'].append(text)
+                    ax.text(xcenter, ycenter, txtformat % sumw[ix, iy], **opts)
 
     if clear:
         ax.set_xlabel(xaxis.label)
@@ -457,26 +497,40 @@ def plot2d(hist, xaxis, ax=None, clear=True, xoverflow='none', yoverflow='none',
         ax.set_xlim(xedges[0], xedges[-1])
         ax.set_ylim(yedges[0], yedges[-1])
 
-    return fig, ax, primitives
+    return ax
 
 
 def plotgrid(h, figure=None, row=None, col=None, overlay=None, row_overflow='none', col_overflow='none', **plot_opts):
-    """
-    Create a grid of plots, enumerating identifiers on up to 3 axes.
+    """Create a grid of plots, enumerating identifiers on up to 3 axes
 
     Parameters
     ----------
-        row:
-            name of row axis
-        col:
-            name of column axis
-        overlay:
+        h : Hist
+            A histogram with up to 3 axes
+        figure : matplotlib.figure.Figure, optional
+            If omitted, a new figure is created. Otherwise, the axes will be redrawn on this existing figure.
+        row : str
+            Name of row axis
+        col : str
+            Name of column axis
+        overlay : str
             name of overlay axis
+        row_overflow : str, optional
+            If overflow behavior is not 'none', extra bins will be drawn on either end of the nominal x
+            axis range, to represent the contents of the overflow bins.  See `Hist.sum` documentation
+            for a description of the options.
+        col_overflow : str, optional
+            Similar to ``row_overflow``
+        ``**plot_opts`` : kwargs
+            The remaining axis of the histogram, after removing any of ``row,col,overlay`` specified,
+            will be the plot axis, with ``plot_opts`` passed to the `plot1d` call.
 
-    The remaining axis will be the plot axis, with plot_opts passed to the plot1d() call
-
-    Pass a figure object to redraw on existing figure
+    Returns
+    -------
+        axes : numpy.ndarray
+            An array of matplotlib `Axes <https://matplotlib.org/3.1.1/api/axes_api.html>`_ objects
     """
+    import mplhep as hep
     import matplotlib.pyplot as plt
     haxes = set(ax.name for ax in h.axes())
     nrow, ncol = 1, 1
@@ -517,7 +571,7 @@ def plotgrid(h, figure=None, row=None, col=None, overlay=None, row_overflow='non
         coltitle = None
         if col:
             vcol = col_identifiers[icol]
-            hcol = h.project(col, vcol)
+            hcol = h.integrate(col, vcol)
             coltitle = str(vcol)
             if isinstance(vcol, Interval) and vcol.label is None:
                 coltitle = "%s ∈ %s" % (h.axis(col).label, coltitle)
@@ -527,7 +581,7 @@ def plotgrid(h, figure=None, row=None, col=None, overlay=None, row_overflow='non
             rowtitle = None
             if row:
                 vrow = row_identifiers[irow]
-                hplot = hcol.project(row, vrow)
+                hplot = hcol.integrate(row, vrow)
                 rowtitle = str(vrow)
                 if isinstance(vrow, Interval) and vrow.label is None:
                     rowtitle = "%s ∈ %s" % (h.axis(row).label, rowtitle)
@@ -544,4 +598,4 @@ def plotgrid(h, figure=None, row=None, col=None, overlay=None, row_overflow='non
         ax.autoscale(axis='y')
         ax.set_ylim(0, None)
 
-    return fig, axes
+    return axes

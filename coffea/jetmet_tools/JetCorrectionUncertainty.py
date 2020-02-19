@@ -8,6 +8,7 @@ from copy import deepcopy
 from ..util import USE_CUPY
 if USE_CUPY:
     import cupy
+import re
 
 def _checkConsistency(against, tocheck):
     if against is None:
@@ -19,19 +20,51 @@ def _checkConsistency(against, tocheck):
     return tocheck
 
 
+def split_jec_name(name):
+    info = name.split('_')
+
+    # Check for the case when the dataera name contains a _ like "17Nov2017_V6"
+    if re.match(r"V[0-9]+", info[2]):
+        dataera = info[1] + info[2]
+        info.pop(2)
+        info[1] = dataera
+
+    if "UncertaintySources" in info:
+        lvl = info.pop()
+        info[3] = lvl
+
+    if len(info) != 5:
+        raise Exception('Corrector name {0} is not properly formatted!'.format(name))
+
+    campaign = _checkConsistency(None, info[0])
+    dataera = _checkConsistency(None, info[1])
+    datatype = _checkConsistency(None, info[2])
+    level = info[3].replace('Uncertainty', 'jes')  # use a generic 'jes' for normal uncertainty
+    jettype = _checkConsistency(None, info[4])
+
+    return campaign, dataera, datatype, level, jettype
+
+
 class JetCorrectionUncertainty(object):
     """
-        This class is a columnar implementation of the JetCorrectionUncertainty tool in
-        CMSSW and FWLite. It calculates the jet energy scale uncertainty for a corrected jet
-        in a given binning.
-        You can use this class as follows:
+    This class is a columnar implementation of the JetCorrectionUncertainty tool in
+    CMSSW and FWLite. It calculates the jet energy scale uncertainty for a corrected jet
+    in a given binning.
+
+    It implements the jet energy correction definition specified in the JES Uncertainty TWiki_.
+
+    .. _TWiki: https://twiki.cern.ch/twiki/bin/view/CMS/JECUncertaintySources
+
+    You can use this class as follows::
+
         jcu = JetCorrectionUncertainty(name1=corrL1,...)
         jetUncs = jcu(JetParameter1=jet.parameter1,...)
+
     """
     def __init__(self, **kwargs):
         """
-            You construct a JetCorrectionUncertainty by passing in a dict of names and functions.
-            Names must be formatted as '<campaign>_<dataera>_<datatype>_<level>_<jettype>'.
+        You construct a JetCorrectionUncertainty by passing in a dict of names and functions.
+        Names must be formatted as '<campaign>_<dataera>_<datatype>_<level>_<jettype>'.
         """
         jettype = None
         levels = []
@@ -43,20 +76,10 @@ class JetCorrectionUncertainty(object):
             if not isinstance(func, jec_uncertainty_lookup):
                 raise Exception('{} is a {} and not a jec_uncertainty_lookup!'.format(name,
                                                                                       type(func)))
-            info = name.split('_')
-            if len(info) == 6:  # this is when we are using split sources
-                lvl = info.pop()
-                info[3] = lvl
+            campaign, dataera, datatype, level, jettype = split_jec_name(name)
 
-            if len(info) != 5:
-                raise Exception('Corrector name is not properly formatted!')
-
-            campaign = _checkConsistency(campaign, info[0])
-            dataera = _checkConsistency(dataera, info[1])
-            datatype = _checkConsistency(datatype, info[2])
-            levels.append(info[3].replace('Uncertainty', 'jes'))  # use a generic 'jes' for normal uncertainty
+            levels.append(level)
             funcs.append(func)
-            jettype = _checkConsistency(jettype, info[4])
 
         if campaign is None:
             raise Exception('Unable to determine production campaign of JECs!')
@@ -112,11 +135,14 @@ class JetCorrectionUncertainty(object):
 
     def getUncertainty(self, **kwargs):
         """
-            Returns the set of uncertainties for all input jets for all the levels (== sources)
-            use like:
+        Returns the set of uncertainties for all input jets for all the levels (== sources)
+
+        Use it like::
+
             juncs = uncertainty.getUncertainty(JetProperty1=jet.property1,...)
-            'juncs' will be formatted like [('SourceName', [[up_val down_val]_jet1 ... ]), ...]
-            in a zip iterator
+            #'juncs' will be formatted like [('SourceName', [[up_val down_val]_jet1 ... ]), ...]
+            #in a zip iterator
+
         """
         uncs = []
         for i, func in enumerate(self._funcs):

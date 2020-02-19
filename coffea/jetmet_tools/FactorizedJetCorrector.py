@@ -31,17 +31,24 @@ _level_order = ['L1', 'L2', 'L3', 'L2L3']
 
 class FactorizedJetCorrector(object):
     """
-        This class is a columnar implementation of the FactorizedJetCorrector tool in
-        CMSSW and FWLite. It applies a series of JECs in ascending order as defined by
-        '_level_order', and checks for the consistency of input corrections.
-        You can use this class as follows:
+    This class is a columnar implementation of the FactorizedJetCorrector tool in
+    CMSSW and FWLite. It applies a series of JECs in ascending order as defined by
+    '_level_order', and checks for the consistency of input corrections.
+
+    It implements the jet energy correction definition specified in the JEC TWiki_.
+
+    .. _TWiki: https://twiki.cern.ch/twiki/bin/view/CMS/JetEnergyScale
+
+    You can use this class as follows::
+
         fjc = FactorizedJetCorrector(name1=corrL1,...)
         jetCorrs = fjc(JetParameter1=jet.parameter1,...)
+
     """
     def __init__(self, **kwargs):
         """
-            You construct a FactorizedJetCorrector by passing in a dict of names and functions.
-            Names must be formatted as '<campaign>_<dataera>_<datatype>_<level>_<jettype>'.
+        You construct a FactorizedJetCorrector by passing in a dict of names and functions.
+        Names must be formatted as '<campaign>_<dataera>_<datatype>_<level>_<jettype>'.
         """
         jettype = None
         levels = []
@@ -123,21 +130,37 @@ class FactorizedJetCorrector(object):
 
     def getCorrection(self, **kwargs):
         """
-            Returns the set of corrections for all input jets at the highest available level
-            use like:
+        Returns the set of corrections for all input jets at the highest available level
+
+        Use it like::
+
             jecs = corrector.getCorrection(JetProperty1=jet.property1,...)
+
         """
         subCorrs = self.getSubCorrections(**kwargs)
         return subCorrs[-1]
 
     def getSubCorrections(self, **kwargs):
         """
-            Returns the set of corrections for all input jets broken down by level
-            use like:
+        Returns the set of corrections for all input jets broken down by level
+
+        Use it like::
+
             jecs = corrector.getSubCorrections(JetProperty1=jet.property1,...)
-            'jecs' will be formatted like [[jec_jet1 jec_jet2 ...] ...]
+            #'jecs' will be formatted like [[jec_jet1 jec_jet2 ...] ...]
+
         """
-        localargs = kwargs
+        localargs = {}
+        localargs.update(kwargs)
+        corrVars = []
+        if 'JetPt' in kwargs.keys():
+            corrVars.append('JetPt')
+            localargs['JetPt'] = np.copy(kwargs['JetPt'])
+        if 'JetE' in kwargs.keys():
+            corrVars.append('JetE')
+            localargs['JetE'] = np.copy(kwargs['JetE'])
+        if len(corrVars) == 0:
+            raise Exception('No variable to correct, need JetPt or JetE in inputs!')
         firstarg = localargs[self._signature[0]]
         cumulativeCorrection = 1.0
         offsets = None
@@ -148,13 +171,6 @@ class FactorizedJetCorrector(object):
                 localargs[key] = localargs[key].content
         else:
             cumulativeCorrection = np.ones_like(firstarg)
-        corrVars = []
-        if 'JetPt' in localargs.keys():
-            corrVars.append('JetPt')
-        if 'JetE' in localargs.keys():
-            corrVars.append('JetE')
-        if len(corrVars) == 0:
-            raise Exception('No variable to correct, need JetPt or JetE in inputs!')
         corrections = []
         for i, func in enumerate(self._funcs):
             sig = func.signature

@@ -1,6 +1,8 @@
 from ..util import awkward
 from ..util import numpy as np
 import os
+import sys
+import warnings
 try:
     import cStringIO as io
 except ImportError:
@@ -13,10 +15,12 @@ except ImportError:
 def _parse_jme_formatted_file(jmeFilePath, interpolatedFunc=False, parmsFromColumns=False, jme_f=None):
     if jme_f is None:
         fopen = open
+        fmode = 'rt'
         if '.gz' in jmeFilePath:
             import gzip
             fopen = gzip.open
-        jme_f = fopen(jmeFilePath, 'rt')
+            fmode = 'r' if sys.platform.startswith('win') and sys.version_info.major < 3 else fmode
+        jme_f = fopen(jmeFilePath, fmode)
     layoutstr = jme_f.readline().strip().strip('{}')
 
     name = jmeFilePath.split('/')[-1].split('.')[0]
@@ -107,14 +111,23 @@ def _build_standard_jme_lookup(name, layout, pars, nBinnedVars, nBinColumns,
         if i == 0:
             binMins = np.unique(pars[columns[0]])
             binMaxs = np.unique(pars[columns[1]])
-            bins[layout[i + offset_name]] = np.union1d(binMins, binMaxs)
+            if np.all(binMins[1:] == binMaxs[:-1]):
+                bins[layout[i + offset_name]] = np.union1d(binMins, binMaxs)
+            else:
+                warnings.warn('binning for file for %s is malformed in variable %s' % (name, layout[i + offset_name]))
+                bins[layout[i + offset_name]] = np.union1d(binMins, binMaxs[-1:])
         else:
             counts = np.zeros(0, dtype=np.int)
             allBins = np.zeros(0, dtype=np.double)
             for binMin in bins[bin_order[0]][:-1]:
                 binMins = np.unique(pars[np.where(pars[columns[0]] == binMin)][columns[i + offset_col]])
                 binMaxs = np.unique(pars[np.where(pars[columns[0]] == binMin)][columns[i + offset_col + 1]])
-                theBins = np.union1d(binMins, binMaxs)
+                theBins = None
+                if np.all(binMins[1:] == binMaxs[:-1]):
+                    theBins = np.union1d(binMins, binMaxs)
+                else:
+                    warnings.warn('binning for file for %s is malformed in variable %s' % (name, layout[i + offset_name]))
+                    theBins = np.union1d(binMins, binMaxs[-1:])
                 allBins = np.append(allBins, theBins)
                 counts = np.append(counts, theBins.size)
             bins[layout[i + offset_name]] = awkward.JaggedArray.fromcounts(counts, allBins)
@@ -139,6 +152,8 @@ def _build_standard_jme_lookup(name, layout, pars, nBinnedVars, nBinColumns,
         if not interpolatedFunc:
             clamp_mins[layout[i + offset_name]] = awkward.JaggedArray.fromcounts(jagged_counts, np.atleast_1d(pars[columns[i + offset_col]]))
             clamp_maxs[layout[i + offset_name]] = awkward.JaggedArray.fromcounts(jagged_counts, np.atleast_1d(pars[columns[i + offset_col + 1]]))
+            assert(clamp_mins[layout[i + offset_name]].valid())
+            assert(clamp_maxs[layout[i + offset_name]].valid())
             offset_col += 1
 
     # now get the parameters, which we will look up with the clamped values
@@ -146,7 +161,9 @@ def _build_standard_jme_lookup(name, layout, pars, nBinnedVars, nBinColumns,
     parm_order = []
     offset_col = 2 * nBinnedVars + 1 + int(not interpolatedFunc) * 2 * nEvalVars
     for i in range(nParms):
-        parms.append(awkward.JaggedArray.fromcounts(jagged_counts, pars[columns[i + offset_col]]))
+        jag = awkward.JaggedArray.fromcounts(jagged_counts, pars[columns[i + offset_col]])
+        assert(jag.valid())
+        parms.append(jag)
         parm_order.append('p%i' % (i))
 
     wrapped_up = {}
@@ -180,7 +197,7 @@ def convert_jersf_txt_file(jersfFilePath):
         vals, names = vallist[-1]
         names = ['central-up-down']
         central, down, up = vals
-        vallist[-1] = (np.vstack((central.flatten(), up.flatten(), down.flatten())).T, names)
+        vallist[-1] = ((central, up, down), names)
         wrapped_up[newkey] = tuple(vallist)
 
     return wrapped_up
@@ -190,10 +207,12 @@ def convert_junc_txt_file(juncFilePath):
     components = []
     basename = os.path.basename(juncFilePath).split('.')[0]
     fopen = open
+    fmode = 'rt'
     if '.gz' in juncFilePath:
         import gzip
         fopen = gzip.open
-    with fopen(juncFilePath, 'rt') as uncfile:
+        fmode = 'r' if sys.platform.startswith('win') and sys.version_info.major < 3 else fmode
+    with fopen(juncFilePath, fmode) as uncfile:
         for line in uncfile:
             if line.startswith('#'):
                 continue
@@ -253,10 +272,12 @@ def convert_junc_txt_component(juncFilePath, uncFile):
 
 def convert_effective_area_file(eaFilePath):
     fopen = open
+    fmode = 'rt'
     if '.gz' in eaFilePath:
         import gzip
         fopen = gzip.open
-    ea_f = fopen(eaFilePath, 'rt')
+        fmode = 'r' if sys.platform.startswith('win') and sys.version_info.major < 3 else fmode
+    ea_f = fopen(eaFilePath, fmode)
     layoutstr = ea_f.readline().strip().strip('{}')
     ea_f.close()
 
@@ -325,4 +346,165 @@ def convert_effective_area_file(eaFilePath):
         values = pars[columns[offset_name + i]]
         wrapped_up[(ea_name, lookup_type)] = (values, dims)
 
+    return wrapped_up
+
+
+def convert_rochester_file(path, loaduncs=True):
+    initialized = False
+
+    fopen = open
+    fmode = 'rt'
+    if '.gz' in path:
+        import gzip
+        fopen = gzip.open
+        fmode = 'r' if sys.platform.startswith('win') and sys.version_info.major < 3 else fmode
+
+    with fopen(path, fmode) as f:
+        for line in f:
+            line = line.strip('\n')
+            # the number of sets available
+            if line.startswith('NSET'):
+                nsets = int(line.split()[1])
+            # the number of members in a given set
+            elif line.startswith('NMEM'):
+                members = [int(x) for x in line.split()[1:]]
+                assert(len(members) == nsets)
+            # the type of the values provided: 0 is default, 1 is replicas (for stat unc), 2 is Symhes (for various systematics)
+            elif line.startswith('TVAR'):
+                tvars = [int(x) for x in line.split()[1:]]
+                assert(len(tvars) == nsets)
+            # number of phi bins
+            elif line.startswith('CPHI'):
+                nphi = int(line.split()[1])
+                phiedges = [float(x) * 2 * np.pi / nphi - np.pi for x in range(nphi + 1)]
+            # number of eta bins and edges
+            elif line.startswith('CETA'):
+                neta = int(line.split()[1])
+                etaedges = [float(x) for x in line.split()[2:]]
+                assert(len(etaedges) == neta + 1)
+            # minimum number of tracker layers with measurement
+            elif line.startswith('RMIN'):
+                nmin = int(line.split()[1])
+            # number of bins in the number of tracker layers measurements
+            elif line.startswith('RTRK'):
+                ntrk = int(line.split()[1])
+            # number of abseta bins and edges
+            elif line.startswith('RETA'):
+                nabseta = int(line.split()[1])
+                absetaedges = [float(x) for x in line.split()[2:]]
+                assert(len(absetaedges) == nabseta + 1)
+            # load the parameters
+            # the structure will be
+            # SETNUMBER MEMBERNUMBER TAG[T,R,F,C] [TAG specific indices] [values]
+            else:
+                if not initialized:
+                    # don't want to necessarily load uncertainties
+                    toload = nsets if loaduncs else 1
+                    M = {s: {m: {t: {} for t in range(2)} for m in range(members[s])} for s in range(toload)}
+                    A = {s: {m: {t: {} for t in range(2)} for m in range(members[s])} for s in range(toload)}
+                    kRes = {s: {m: {t: [] for t in range(2)} for m in range(members[s])} for s in range(toload)}
+                    rsPars = {s: {m: {t: {} for t in range(3)} for m in range(members[s])} for s in range(toload)}
+                    cbS = {s: {m: {} for m in range(members[s])} for s in range(toload)}
+                    cbA = {s: {m: {} for m in range(members[s])} for s in range(toload)}
+                    cbN = {s: {m: {} for m in range(members[s])} for s in range(toload)}
+                    initialized = True
+                remainder = line.split()
+                setn, membern, tag, *remainder = remainder
+                setn = int(setn)
+                membern = int(membern)
+                tag = str(tag)
+                # tag T has 2 indices corresponding to TYPE BINNUMBER and has RTRK+1 values each
+                # these correspond to the nTrk[2] parameters of RocRes (and BINNUMBER is the abseta bin)
+                if tag == 'T':
+                    t, b, *remainder = remainder
+                    t = int(t)
+                    b = int(b)
+                    values = [float(x) for x in remainder]
+                    assert(len(values) == ntrk + 1)
+
+                # tag R has 2 indices corresponding to VARIABLE BINNUMBER and has RTRK values each
+                # these variables correspond to the rsPar[3] and crystal ball (std::vector<CrystalBall> cb) of RocRes where CrystalBall has valus s, a, n
+                # (and BINNUMBER is the abseta bin)
+                # Note: crystal ball here is a symmetric double-sided crystal ball
+                elif tag == 'R':
+                    v, b, *remainder = remainder
+                    v = int(v)
+                    b = int(b)
+                    values = [float(x) for x in remainder]
+                    assert(len(values) == ntrk)
+                    if v in range(3):
+                        if setn in rsPars:
+                            rsPars[setn][membern][v][b] = values
+                            if v == 2:
+                                rsPars[setn][membern][v][b] = [x * 0.01 for x in values]
+                    elif v == 3:
+                        if setn in cbS:
+                            cbS[setn][membern][b] = values
+                    elif v == 4:
+                        if setn in cbA:
+                            cbA[setn][membern][b] = values
+                    elif v == 5:
+                        if setn in cbN:
+                            cbN[setn][membern][b] = values
+
+                # tag F has 1 index corresponding to TYPE and has RETA values each
+                # these correspond to the kRes[2] of RocRes
+                elif tag == 'F':
+                    t, *remainder = remainder
+                    t = int(t)
+                    values = [float(x) for x in remainder]
+                    assert(len(values) == nabseta)
+                    if setn in kRes:
+                        kRes[setn][membern][t] = values
+
+                # tag C has 3 indices corresponding to TYPE VARIABLE BINNUMBER and has NPHI values each
+                # these correspond to M and A values of CorParams (and BINNUMBER is the eta bin)
+                # These are what are used to get the scale factor for kScaleDT (and kScaleMC)
+                #       scale = 1.0 / (M+Q*A*pT)
+                # For the kSpreadMC (gen matched, recommended) and kSmearMC (not gen matched), we need all of the above parameters
+                elif tag == 'C':
+                    t, v, b, *remainder = remainder
+                    t = int(t)
+                    v = int(v)
+                    b = int(b)
+                    values = [float(x) for x in remainder]
+                    assert(len(values) == nphi)
+                    if v == 0:
+                        if setn in M:
+                            M[setn][membern][t][b] = [1.0 + x * 0.01 for x in values]
+                    elif v == 1:
+                        if setn in A:
+                            A[setn][membern][t][b] = [x * 0.01 for x in values]
+
+                else:
+                    raise ValueError(line)
+
+    # now build the lookup tables
+    # for data scale, simple, just M A in bins of eta,phi
+    _scaleedges = (np.array(etaedges), np.array(phiedges))
+    _Mvalues = {s: {m: {t: np.array([M[s][m][t][b] for b in range(neta)]) for t in M[s][m]} for m in M[s]} for s in M}
+    _Avalues = {s: {m: {t: np.array([A[s][m][t][b] for b in range(neta)]) for t in A[s][m]} for m in A[s]} for s in A}
+
+    # for mc scale, more complicated
+    # version 1 if gen pt available
+    # only requires the kRes lookup
+    _resedges = np.array(absetaedges)
+    _kResvalues = {s: {m: {t: np.array(kRes[s][m][t]) for t in kRes[s][m]} for m in kRes[s]} for s in kRes}
+
+    # version 2 if gen pt not available
+    trkedges = [0] + [nmin + x + 0.5 for x in range(ntrk)]
+    _cbedges = (np.array(absetaedges), np.array(trkedges))
+    _rsParsvalues = {s: {m: {t: np.array([rsPars[s][m][t][b] for b in range(nabseta)]) for t in rsPars[s][m]} for m in rsPars[s]} for s in rsPars}
+    _cbSvalues = {s: {m: np.array([cbS[s][m][b] for b in range(nabseta)]) for m in cbS[s]} for s in cbS}
+    _cbAvalues = {s: {m: np.array([cbA[s][m][b] for b in range(nabseta)]) for m in cbA[s]} for s in cbA}
+    _cbNvalues = {s: {m: np.array([cbN[s][m][b] for b in range(nabseta)]) for m in cbN[s]} for s in cbN}
+
+    wrapped_up = {
+        'nsets': nsets,
+        'members': members,
+        'edges': {'scales': _scaleedges, 'res': _resedges, 'cb': _cbedges, },
+        'values': {'M': _Mvalues, 'A': _Avalues,
+                   'kRes': _kResvalues,
+                   'rsPars': _rsParsvalues, 'cbS': _cbSvalues, 'cbA': _cbAvalues, 'cbN': _cbNvalues, },
+    }
     return wrapped_up
