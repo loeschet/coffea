@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-
 # BSD 3-Clause License
 #
 # Copyright (c) 2018, Fermilab
@@ -29,14 +27,29 @@
 # CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-from . import lookup_tools
-from . import analysis_objects
-from . import striped
-from . import jetmet_tools
-from . import arrays
-
 from . import version
 __version__ = version.__version__
 
-from . import util
+import sys
+if sys.version_info.major < 3:
+    import warnings
+    warnings.warn('coffea only supports python3 as of 1 January 2020!')
+    warnings.warn('If you are using python2 and run into problems please submit a pull request to fix the issue!')
+
+from . import (
+    hist,
+    lookup_tools,
+    analysis_objects,
+    jetmet_tools,
+    arrays,
+    util,
+)
+
+__all__ = [
+    'hist',
+    'lookup_tools',
+    'analysis_objects',
+    'jetmet_tools',
+    'arrays',
+    'util',
+]

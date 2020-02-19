@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 
-pip -q install -U sphinx nbsphinx sphinx-rtd-theme
-python setup.py -q install
+python -m pip -q install -U sphinx==2.2.2 nbsphinx sphinx-rtd-theme sphinx-automodapi
+pip -q install -e .
 pushd docs
+rm -rf build
 pushd source
-sphinx-autogen reference.rst
+rm -rf api
+rm -rf modules
+sphinx-autogen -t _templates reference.rst
 popd
 make html
 touch build/html/.nojekyll
 popd
-pip uninstall --yes coffea 

@@ -3,12 +3,14 @@ from .dense_evaluated_lookup import dense_evaluated_lookup
 from .jme_standard_function import jme_standard_function
 from .jersf_lookup import jersf_lookup
 from .jec_uncertainty_lookup import jec_uncertainty_lookup
+from .rochester_lookup import rochester_lookup
 
 lookup_types = {'dense_lookup': dense_lookup,
                 'dense_evaluated_lookup': dense_evaluated_lookup,
                 'jme_standard_function': jme_standard_function,
                 'jersf_lookup': jersf_lookup,
-                'jec_uncertainty_lookup': jec_uncertainty_lookup
+                'jec_uncertainty_lookup': jec_uncertainty_lookup,
+                'rochester_lookup': rochester_lookup
                }
 
 
@@ -18,10 +20,17 @@ class evaluator(object):
         looking up values of histograms and other functions read in
         with the extractor class. Stored look ups can be indexed by
         name and then called through an overloaded __call__ function.
-        Example:
-            evaluate = extractor.make_evaluator()
-            vals = evaluate[XYZ](arg1,arg2,...)
-        The returned 'vals' has the same shape as the input args.
+
+        Example::
+
+            #assuming 'eta' and 'pt' are array like objects
+            wgts = "testSF2d scalefactors_Tight_Electron tests/samples/testSF2d.histo.root"
+            extractor.add_weight_sets([wgts])
+            extractor.finalize(reduce_list=['testSF2d'])
+            evaluator = extractor.make_evaluator()
+            out = evaluator["testSF2d"](eta, pt)
+
+        The returned value has the same shape as the input arguments.
 
         lookup_types is a map of possible contructors for extracted data
     """

@@ -1,9 +1,12 @@
 from __future__ import print_function, division
 
+import os
 from coffea import lookup_tools
 import uproot
 from coffea.util import awkward
 from coffea.util import numpy as np
+from awkward import JaggedArray
+from coffea.nanoaod import NanoEvents
 
 from dummy_distributions import dummy_jagged_eta_pt
 
@@ -105,7 +108,10 @@ def test_root_scalefactors():
 
 def test_btag_csv_scalefactors():
     extractor = lookup_tools.extractor()
-    extractor.add_weight_sets(["testBTag * tests/samples/testBTagSF.btag.csv"])
+    extractor.add_weight_sets(["testBTag * tests/samples/testBTagSF.btag.csv",
+                               "* * tests/samples/DeepCSV_102XSF_V1.btag.csv.gz",
+                               "* * tests/samples/DeepJet_102XSF_WP_V1.btag.csv.gz",
+                               ])
     extractor.finalize()
 
     evaluator = extractor.make_evaluator()
@@ -115,6 +121,10 @@ def test_btag_csv_scalefactors():
     test_discr = np.zeros_like(test_eta)
 
     print(evaluator['testBTagCSVv2_1_comb_up_0'])
+    
+    print(evaluator['DeepCSV_1_comb_up_0'])
+    
+    print(evaluator['btagsf_1_comb_up_0'])
     
     sf_out = evaluator['testBTagCSVv2_1_comb_up_0'](test_eta, test_pt, test_discr)
 
@@ -137,6 +147,7 @@ def test_jec_txt_scalefactors():
     extractor = lookup_tools.extractor()
     extractor.add_weight_sets([
         "testJEC * tests/samples/Fall17_17Nov2017_V32_MC_L2Relative_AK4PFPuppi.jec.txt",
+        "* * tests/samples/Summer16_07Aug2017_V11_L1fix_MC_L2Relative_AK4PFchs.jec.txt.gz",
         "* * tests/samples/Fall17_17Nov2017_V32_MC_Uncertainty_AK4PFPuppi.junc.txt",
         "* * tests/samples/Autumn18_V8_MC_UncertaintySources_AK4PFchs.junc.txt",
         "* * tests/samples/Spring16_25nsV10_MC_SF_AK4PFPuppi.jersf.txt"
@@ -150,6 +161,10 @@ def test_jec_txt_scalefactors():
     jec_out = evaluator['testJECFall17_17Nov2017_V32_MC_L2Relative_AK4PFPuppi'](test_eta,test_pt)
 
     print(evaluator['testJECFall17_17Nov2017_V32_MC_L2Relative_AK4PFPuppi'])
+    
+    jec_out = evaluator['Summer16_07Aug2017_V11_L1fix_MC_L2Relative_AK4PFchs'](test_eta,test_pt)
+    
+    print(evaluator['Summer16_07Aug2017_V11_L1fix_MC_L2Relative_AK4PFchs'])
 
     jersf = evaluator['Spring16_25nsV10_MC_SF_AK4PFPuppi']
     
@@ -162,3 +177,67 @@ def test_jec_txt_scalefactors():
     assert('Autumn18_V8_MC_UncertaintySources_AK4PFchs_AbsoluteScale' in evaluator.keys())
     junc_out = evaluator['Autumn18_V8_MC_UncertaintySources_AK4PFchs_AbsoluteScale'](test_eta,test_pt)
     print(evaluator['Autumn18_V8_MC_UncertaintySources_AK4PFchs_AbsoluteScale'])
+
+def test_jec_txt_effareas():
+    extractor = lookup_tools.extractor()
+    extractor.add_weight_sets(['* * tests/samples/photon_id.ea.txt'])
+    extractor.finalize()
+
+    evaluator = extractor.make_evaluator()
+    
+    counts, test_eta, test_pt = dummy_jagged_eta_pt()
+
+    ch_out = evaluator['photon_id_EA_CHad'](test_eta)
+    print(evaluator['photon_id_EA_CHad'])
+
+    nh_out = evaluator['photon_id_EA_NHad'](test_eta)
+    print(evaluator['photon_id_EA_NHad'])
+
+    ph_out = evaluator['photon_id_EA_Pho'](test_eta)
+    print(evaluator['photon_id_EA_Pho'])
+
+def test_rochester():
+    rochester_data = lookup_tools.txt_converters.convert_rochester_file('tests/samples/RoccoR2018.txt.gz',loaduncs=True)
+    rochester = lookup_tools.rochester_lookup.rochester_lookup(rochester_data)
+
+    # to test 1-to-1 agreement with official Rochester requires loading C++ files
+    # instead, preload the correct scales in the sample directory
+    # the script tests/samples/rochester/build_rochester.py produces these
+    official_data_k = np.load('tests/samples/nano_dimuon_rochester.npy')
+    official_data_err = np.load('tests/samples/nano_dimuon_rochester_err.npy')
+    official_mc_k = np.load('tests/samples/nano_dy_rochester.npy')
+    official_mc_err = np.load('tests/samples/nano_dy_rochester_err.npy')
+    mc_rand = np.load('tests/samples/nano_dy_rochester_rand.npy')
+
+    # test against nanoaod
+    events = NanoEvents.from_file(os.path.abspath('tests/samples/nano_dimuon.root'))
+
+    data_k = rochester.kScaleDT(events.Muon.charge, events.Muon.pt, events.Muon.eta, events.Muon.phi)
+    assert(all(np.isclose(data_k.flatten(), official_data_k)))
+    data_err = rochester.kScaleDTerror(events.Muon.charge, events.Muon.pt, events.Muon.eta, events.Muon.phi)
+    data_err = np.array(data_err.flatten(), dtype=float)
+    assert(all(np.isclose(data_err, official_data_err, atol=1e-8)))
+
+    # test against mc
+    events = NanoEvents.from_file(os.path.abspath('tests/samples/nano_dy.root'))
+
+    hasgen = ~np.isnan(events.Muon.matched_gen.pt.fillna(np.nan))
+    mc_rand = JaggedArray.fromoffsets(hasgen.offsets, mc_rand)
+    mc_kspread = rochester.kSpreadMC(events.Muon.charge[hasgen], events.Muon.pt[hasgen], events.Muon.eta[hasgen], events.Muon.phi[hasgen],
+                                     events.Muon.matched_gen.pt[hasgen])
+    mc_ksmear = rochester.kSmearMC(events.Muon.charge[~hasgen], events.Muon.pt[~hasgen], events.Muon.eta[~hasgen], events.Muon.phi[~hasgen],
+                                   events.Muon.nTrackerLayers[~hasgen], mc_rand[~hasgen])
+    mc_k = np.ones_like(events.Muon.pt.flatten())
+    mc_k[hasgen.flatten()] = mc_kspread.flatten()
+    mc_k[~hasgen.flatten()] = mc_ksmear.flatten()
+    assert(all(np.isclose(mc_k, official_mc_k)))
+
+    mc_errspread = rochester.kSpreadMCerror(events.Muon.charge[hasgen], events.Muon.pt[hasgen], events.Muon.eta[hasgen], events.Muon.phi[hasgen],
+                                            events.Muon.matched_gen.pt[hasgen])
+    mc_errsmear = rochester.kSmearMCerror(events.Muon.charge[~hasgen], events.Muon.pt[~hasgen], events.Muon.eta[~hasgen], events.Muon.phi[~hasgen],
+                                          events.Muon.nTrackerLayers[~hasgen], mc_rand[~hasgen])
+    mc_err = np.ones_like(events.Muon.pt.flatten())
+    mc_err[hasgen.flatten()] = mc_errspread.flatten()
+    mc_err[~hasgen.flatten()] = mc_errsmear.flatten()
+    assert(all(np.isclose(mc_err, official_mc_err, atol=1e-8)))
+
