@@ -1,7 +1,7 @@
 from threading import Lock
 import pandas
-import numpy
-import numba
+from ..util import numpy
+from ..util import numba
 
 
 class BTagScaleFactor:
@@ -147,7 +147,7 @@ class BTagScaleFactor:
                     out = duck
                 BTagScaleFactor._formulaCache[formula] = out
                 return out
-
+    
     def _lookup(self, axis, values):
         if len(axis) == 2:
             return numpy.zeros(shape=values.shape, dtype=numpy.uint)
@@ -195,6 +195,16 @@ class BTagScaleFactor:
             discr = discr.flatten() if discr is not None else None
         except AttributeError:
             jin = None
+        
+        
+        if 'cupy.core.core.ndarray' in str(type(abseta)):
+            abseta = numpy.array(abseta.tolist())
+        if 'cupy.core.core.ndarray' in str(type(pt)):
+            pt = numpy.array(pt.tolist())
+        if 'cupy.core.core.ndarray' in str(type(discr)):
+            discr = numpy.array(discr.tolist())
+        
+        
         corr = self._corrections[systematic]
         idx = (
             2 - self._lookup(self._flavor, flavor),  # transform to btv definiton
